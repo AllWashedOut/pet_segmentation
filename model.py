@@ -39,6 +39,8 @@ parser.add_argument('--max_epochs', action='store',
 args = parser.parse_args()
 
 dataset, info = tfds.load('oxford_iiit_pet:3.*.*', with_info=True, data_dir=args.dataset_path)
+val_ds, test_ds = tfds.load('oxford_iiit_pet:3.*.*', split=['test[:50%]', 'test[-50%:]'], data_dir=args.dataset_path)
+print(info)
 
 IMG_SIZE = 128
 BACKBONE = 'mobilenetv2'
@@ -62,10 +64,7 @@ def colorAugmentations(img, mask):
   #img += tf.random.normal(shape=tf.shape(img), mean=0.0, stddev=0.03, dtype=tf.float32)
   
   # TODO: enable above and delete below.
-  
-  with open('foo.txt', 'a') as out_file:
-    out_file.write('foo')
-  print('foo!!!!!!!!!!!!!!!')
+  #print('foo!!!!!!!!!!!!!!!\n')
   
   return img, mask
 
@@ -73,11 +72,11 @@ def geometryAugmentations(img, mask):
   # Augmentations that alter geometry. That means that they
   # should be applied to image AND mask.
   seed = random.randint(0, 99999999)
-  img = tf.image.random_flip_left_right(img, seed=seed)
-  mask = tf.image.random_flip_left_right(mask, seed=seed)
-  patch_size = tf.math.minimum(tf.shape(img)[0], tf.shape(img)[1]) * 9 // 10
-  img = tf.image.random_crop(img, size=(patch_size, patch_size, 3), seed=seed)
-  mask = tf.image.random_crop(mask, size=(patch_size, patch_size, 1), seed=seed)
+  #img = tf.image.random_flip_left_right(img, seed=seed)
+  #mask = tf.image.random_flip_left_right(mask, seed=seed)
+  #patch_size = tf.math.minimum(tf.shape(img)[0], tf.shape(img)[1]) * 9 // 10
+  #img = tf.image.random_crop(img, size=(patch_size, patch_size, 3), seed=seed)
+  #mask = tf.image.random_crop(mask, size=(patch_size, patch_size, 1), seed=seed)
   # TODO MORE
   
   # TODO: test antialias and resize methods
@@ -85,15 +84,14 @@ def geometryAugmentations(img, mask):
   #mask = tf.image.resize(mask, (IMG_SIZE, IMG_SIZE), antialias=True, method=tf.image.ResizeMethod.LANCZOS3)
   img = tf.image.resize(img, (IMG_SIZE, IMG_SIZE))
   mask = tf.image.resize(mask, (IMG_SIZE, IMG_SIZE))
-  
-  with open('foo.txt', 'a') as out_file:
-    out_file.write('foo')
-  print('BAR!!!!!!!!!!!!!!!')
+
+  #print('BAR!!!!!!!!!!!!!!!')
   
   return img, mask
 
+PIXEL_DATA_TYPE = tf.float32
 def normalize(input_image, input_mask):
-  input_image = tf.cast(input_image, tf.float32) / 255.0
+  input_image = tf.cast(input_image, PIXEL_DATA_TYPE) / 255.0
   input_mask -= 1
   return input_image, input_mask
   
@@ -122,13 +120,12 @@ TRAIN_LENGTH = info.splits['train'].num_examples
 BUFFER_SIZE = 1000
 STEPS_PER_EPOCH = TRAIN_LENGTH // args.batch_size
 
-train = (dataset['train'].shuffle(BUFFER_SIZE)
+# TODO: prefetch or cache?
+train_dataset = (dataset['train'].shuffle(BUFFER_SIZE)
                          .map(load_image_train, num_parallel_calls=tf.data.experimental.AUTOTUNE)
-                         .repeat()
-                         .map(geometryAugmentations, num_parallel_calls=tf.data.experimental.AUTOTUNE)
-                         .map(colorAugmentations, num_parallel_calls=tf.data.experimental.AUTOTUNE)
-                         .batch(args.batch_size))
-test = dataset['test'].map(load_image_test).repeat().batch(args.batch_size)
+                         .repeat())
+validate_dataset = val_ds.map(load_image_test, num_parallel_calls=AUTOTUNE).repeat().batch(args.batch_size)
+test_dataset = test_ds.map(load_image_test, num_parallel_calls=AUTOTUNE).batch(args.batch_size)
 
 def display(display_list):
   plt.figure(figsize=(15, 15))
@@ -145,7 +142,7 @@ def display(display_list):
     plt.axis('off')
   plt.show()
   
-for image, mask in train.take(1):
+for image, mask in train_dataset.take(1):
   sample_image, sample_mask = image, mask
 display([sample_image, sample_mask])
 
@@ -169,6 +166,18 @@ def show_predictions(dataset=None, num=1):
              
 #show_predictions()
 
+def img_generator():
+  for img, mask in train_dataset:
+    #img, mask = colorAugmentations(img, mask)
+    img, mask = geometryAugmentations(img, mask)
+    yield img, mask
+
+def augmentDataset():
+  return tf.data.Dataset.from_generator(
+    img_generator,
+    (PIXEL_DATA_TYPE, PIXEL_DATA_TYPE)).batch(args.batch_size)
+    # TODO prefetch or cache?
+  
 early_stopper = EarlyStopping(monitor='val_loss', verbose=1, patience=args.patience)
 model_checkpoint = ModelCheckpoint(args.model_path, monitor='val_loss',
   mode='min', save_best_only=True, verbose=1)
@@ -177,10 +186,10 @@ callbacks = [early_stopper, model_checkpoint]
 VAL_SUBSPLITS = 5
 VALIDATION_STEPS = info.splits['test'].num_examples//args.batch_size//VAL_SUBSPLITS
 # TODO: augment
-model_history = model.fit(tfds.as_numpy(train), epochs=args.max_epochs,
+model_history = model.fit(tfds.as_numpy(augmentDataset()), epochs=args.max_epochs,
                           steps_per_epoch=STEPS_PER_EPOCH,
                           validation_steps=VALIDATION_STEPS,
-                          validation_data=tfds.as_numpy(test),
+                          validation_data=tfds.as_numpy(validate_dataset),
                           callbacks=callbacks)
 loss = model_history.history['loss']
 val_loss = model_history.history['val_loss']
@@ -201,4 +210,7 @@ plt.ylim([0, 1])
 plt.legend()
 plt.show()
 
-show_predictions(test, 3)
+print('Final test evaluation:')
+print(model.metrics_names)
+print(model.evaluate(tfds.as_numpy(test_dataset), verbose=1, steps=VALIDATION_STEPS//2))
+show_predictions(test_dataset, 3)
