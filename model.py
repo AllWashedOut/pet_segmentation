@@ -45,6 +45,7 @@ BACKBONE = 'mobilenetv2'
 # TODO: unfreeze top layers?
 model = sm.Unet(BACKBONE, classes=3, encoder_freeze=True, input_shape=(IMG_SIZE, IMG_SIZE, 3))
 preprocess_input = sm.get_preprocessing(BACKBONE)
+# TODO: try DICE
 custom_loss = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
 model.compile(optimizer='adam',
               loss=custom_loss,
@@ -80,8 +81,10 @@ def geometryAugmentations(img, mask):
   # TODO MORE
   
   # TODO: test antialias and resize methods
-  img = tf.image.resize(img, (IMG_SIZE, IMG_SIZE), antialias=True, method=tf.image.ResizeMethod.lanczos3)
-  mask = tf.image.resize(mask, (IMG_SIZE, IMG_SIZE), antialias=True, method=tf.image.ResizeMethod.lanczos3)
+  #img = tf.image.resize(img, (IMG_SIZE, IMG_SIZE), antialias=True, method=tf.image.ResizeMethod.LANCZOS3)
+  #mask = tf.image.resize(mask, (IMG_SIZE, IMG_SIZE), antialias=True, method=tf.image.ResizeMethod.LANCZOS3)
+  img = tf.image.resize(img, (IMG_SIZE, IMG_SIZE))
+  mask = tf.image.resize(mask, (IMG_SIZE, IMG_SIZE))
   
   with open('foo.txt', 'a') as out_file:
     out_file.write('foo')
@@ -122,8 +125,8 @@ STEPS_PER_EPOCH = TRAIN_LENGTH // args.batch_size
 train = (dataset['train'].shuffle(BUFFER_SIZE)
                          .map(load_image_train, num_parallel_calls=tf.data.experimental.AUTOTUNE)
                          .repeat()
-                         .map(geometryAugmentations)
-                         .map(colorAugmentations)
+                         .map(geometryAugmentations, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+                         .map(colorAugmentations, num_parallel_calls=tf.data.experimental.AUTOTUNE)
                          .batch(args.batch_size))
 test = dataset['test'].map(load_image_test).repeat().batch(args.batch_size)
 
