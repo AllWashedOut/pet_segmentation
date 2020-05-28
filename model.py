@@ -3,6 +3,7 @@ import tensorflow_addons as tfa
 import argparse
 import random
 import numpy as np
+import math
 
 import keras
 from keras.models import load_model
@@ -10,7 +11,8 @@ from keras.callbacks import EarlyStopping, ModelCheckpoint
 from keras.preprocessing.image import ImageDataGenerator
 from tensorflow.data.experimental import AUTOTUNE
 
-import segmentation_models as sm  # https://github.com/qubvel/segmentation_models
+import seg.segmentation_models as sm  # https://github.com/qubvel/segmentation_models
+from clr_callback import CyclicLR
 
 import tensorflow_datasets as tfds
 tfds.disable_progress_bar()
@@ -35,6 +37,9 @@ parser.add_argument('--dataset_path', action='store',
 parser.add_argument('--max_epochs', action='store',
                       default=75, dest='max_epochs',
                       help='Training max_epochs', type=int)
+parser.add_argument('--encoder_freeze_percent', action='store',
+                      default=0.9, dest='encoder_freeze_percent',
+                      help='Fraction of encoder layers to set untrainable', type=float)
                       
 args = parser.parse_args()
 
@@ -43,9 +48,10 @@ val_ds, test_ds = tfds.load('oxford_iiit_pet:3.*.*', split=['test[:50%]', 'test[
 print(info)
 
 IMG_SIZE = 128
-BACKBONE = 'mobilenetv2'
-# TODO: unfreeze top layers?
-model = sm.Unet(BACKBONE, classes=3, encoder_freeze=True, input_shape=(IMG_SIZE, IMG_SIZE, 3))
+#BACKBONE = 'mobilenetv2'  # 88% (frozen encoder)
+BACKBONE = 'inceptionv3'
+# TODO: unfreeze more layers?
+model = sm.Unet(BACKBONE, classes=3, encoder_freeze=args.encoder_freeze_percent, input_shape=(IMG_SIZE, IMG_SIZE, 3))
 preprocess_input = sm.get_preprocessing(BACKBONE)
 # TODO: try DICE
 custom_loss = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
@@ -56,43 +62,43 @@ model.compile(optimizer='adam',
 def colorAugmentations(img, mask):
   # Augmentations that alter color but not geometry. That means that they
   # should be applied only the to image, not the mask.
-  #img = tf.image.random_hue(img, max_delta=0.1)
-  #img = tf.image.random_saturation(img, lower=0.5, upper=1.5)
-  #img = tf.image.random_contrast(img, lower=0.8, upper=1.2)
-  #img = tf.image.random_brightness(img, max_delta=0.3)
+  img = tf.image.random_hue(img, max_delta=0.1)
+  img = tf.image.random_saturation(img, lower=0.5, upper=1.3)
+  img = tf.image.random_contrast(img, lower=0.8, upper=1.2)
+  img = tf.image.random_brightness(img, max_delta=0.3)
   # add noise
-  #img += tf.random.normal(shape=tf.shape(img), mean=0.0, stddev=0.03, dtype=tf.float32)
-  
-  # TODO: enable above and delete below.
-  #print('foo!!!!!!!!!!!!!!!\n')
-  
+  img += tf.random.normal(shape=tf.shape(img), mean=0.0, stddev=0.03, dtype=tf.float32)
   return img, mask
 
 def geometryAugmentations(img, mask):
   # Augmentations that alter geometry. That means that they
   # should be applied to image AND mask.
-  seed = random.randint(0, 99999999)
-  #img = tf.image.random_flip_left_right(img, seed=seed)
-  #mask = tf.image.random_flip_left_right(mask, seed=seed)
-  #patch_size = tf.math.minimum(tf.shape(img)[0], tf.shape(img)[1]) * 9 // 10
-  #img = tf.image.random_crop(img, size=(patch_size, patch_size, 3), seed=seed)
-  #mask = tf.image.random_crop(mask, size=(patch_size, patch_size, 1), seed=seed)
-  # TODO MORE
+  # Some random operations are done on a concatinated image (img & mask)
+  # so that the effect is equal on both.
+  combined = tf.concat([img, mask], axis=2)
+  #combined = tfa.image.rotate(combined, tf.random.uniform(shape=[1], minval=-math.pi/8, maxval=math.pi/8, dtype=tf.float32))
+  patch_size = (tf.shape(img)[0] * 9 // 10, tf.shape(img)[1] * 9 // 10)
+  combined = tf.image.random_crop(combined, size=[patch_size[0], patch_size[1], 4])  # 3 color channels + 1 mask channel = 4
+  combined = tf.image.random_flip_left_right(combined)
+  
+  img = combined[:, :, :3]
+  img.set_shape([patch_size[0], patch_size[1], 3])
+  mask = combined[:, :, 3:]
+  mask.set_shape([patch_size[0], patch_size[1], 1])
+  # TODO MORE    
   
   # TODO: test antialias and resize methods
   #img = tf.image.resize(img, (IMG_SIZE, IMG_SIZE), antialias=True, method=tf.image.ResizeMethod.LANCZOS3)
   #mask = tf.image.resize(mask, (IMG_SIZE, IMG_SIZE), antialias=True, method=tf.image.ResizeMethod.LANCZOS3)
   img = tf.image.resize(img, (IMG_SIZE, IMG_SIZE))
   mask = tf.image.resize(mask, (IMG_SIZE, IMG_SIZE))
-
-  #print('BAR!!!!!!!!!!!!!!!')
   
   return img, mask
 
 PIXEL_DATA_TYPE = tf.float32
 def normalize(input_image, input_mask):
   input_image = tf.cast(input_image, PIXEL_DATA_TYPE) / 255.0
-  input_mask -= 1
+  input_mask = tf.cast(input_mask, PIXEL_DATA_TYPE) - 1
   return input_image, input_mask
   
 @tf.function
@@ -117,12 +123,13 @@ def load_image_test(datapoint):
   
 
 TRAIN_LENGTH = info.splits['train'].num_examples
-BUFFER_SIZE = 1000
+BUFFER_SIZE = 500
 STEPS_PER_EPOCH = TRAIN_LENGTH // args.batch_size
 
-# TODO: prefetch or cache?
-train_dataset = (dataset['train'].shuffle(BUFFER_SIZE)
+train_dataset = (dataset['train']
                          .map(load_image_train, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+                         .cache()
+                         .shuffle(buffer_size=BUFFER_SIZE)
                          .repeat())
 validate_dataset = val_ds.map(load_image_test, num_parallel_calls=AUTOTUNE).repeat().batch(args.batch_size)
 test_dataset = test_ds.map(load_image_test, num_parallel_calls=AUTOTUNE).batch(args.batch_size)
@@ -144,11 +151,7 @@ def display(display_list):
   
 for image, mask in train_dataset.take(1):
   sample_image, sample_mask = image, mask
-display([sample_image, sample_mask])
-
-# preprocess input
-#x_train = preprocess_input(x_train)
-#x_val = preprocess_input(x_val)
+#display([sample_image, sample_mask])
 
 def create_mask(pred_mask):
   pred_mask = tf.argmax(pred_mask, axis=-1)
@@ -168,23 +171,25 @@ def show_predictions(dataset=None, num=1):
 
 def img_generator():
   for img, mask in train_dataset:
-    #img, mask = colorAugmentations(img, mask)
+    img, mask = colorAugmentations(img, mask)
     img, mask = geometryAugmentations(img, mask)
     yield img, mask
 
 def augmentDataset():
-  return tf.data.Dataset.from_generator(
-    img_generator,
-    (PIXEL_DATA_TYPE, PIXEL_DATA_TYPE)).batch(args.batch_size)
+  return (tf.data.Dataset.from_generator(img_generator, (PIXEL_DATA_TYPE, PIXEL_DATA_TYPE))
+            .batch(args.batch_size)
+            .prefetch(buffer_size=BUFFER_SIZE))
     # TODO prefetch or cache?
+  
+VAL_SUBSPLITS = 5
+VALIDATION_STEPS = info.splits['test'].num_examples//args.batch_size//VAL_SUBSPLITS
   
 early_stopper = EarlyStopping(monitor='val_loss', verbose=1, patience=args.patience)
 model_checkpoint = ModelCheckpoint(args.model_path, monitor='val_loss',
   mode='min', save_best_only=True, verbose=1)
-callbacks = [early_stopper, model_checkpoint]
+clr = CyclicLR(base_lr=0.0005, max_lr=0.006, step_size=4*STEPS_PER_EPOCH, mode='triangular2')
+callbacks = [early_stopper, model_checkpoint, clr]
 
-VAL_SUBSPLITS = 5
-VALIDATION_STEPS = info.splits['test'].num_examples//args.batch_size//VAL_SUBSPLITS
 # TODO: augment
 model_history = model.fit(tfds.as_numpy(augmentDataset()), epochs=args.max_epochs,
                           steps_per_epoch=STEPS_PER_EPOCH,
@@ -211,6 +216,6 @@ plt.legend()
 plt.show()
 
 print('Final test evaluation:')
-print(model.metrics_names)
-print(model.evaluate(tfds.as_numpy(test_dataset), verbose=1, steps=VALIDATION_STEPS//2))
+test_loss, test_accuracy = model.evaluate(tfds.as_numpy(test_dataset), verbose=0, steps=VALIDATION_STEPS//2)
+print('Test loss: {:.2f}. Test Accuracy: {:.2f}'.format(test_loss, test_accuracy))
 show_predictions(test_dataset, 3)
