@@ -105,7 +105,7 @@ def normalize(input_image, input_mask):
   
 @tf.function
 def load_image_train(datapoint):
-  print('Loading image')
+  print('Loading trainging images')
 
   input_image, input_mask = normalize(datapoint['image'], datapoint['segmentation_mask'])
   
@@ -136,6 +136,57 @@ train_dataset = (dataset['train']
 validate_dataset = val_ds.map(load_image_test, num_parallel_calls=AUTOTUNE).repeat().batch(args.batch_size)
 test_dataset = test_ds.map(load_image_test, num_parallel_calls=AUTOTUNE).batch(args.batch_size)
 
+def img_generator():
+  for img, mask in train_dataset:
+    img, mask = colorAugmentations(img, mask)
+    img, mask = geometryAugmentations(img, mask)
+    yield img, mask
+
+def augmentedDataset():
+  return (tf.data.Dataset.from_generator(img_generator, (PIXEL_DATA_TYPE, PIXEL_DATA_TYPE))
+            .batch(args.batch_size)
+            .prefetch(buffer_size=BUFFER_SIZE))
+  
+VAL_SUBSPLITS = 5
+VALIDATION_STEPS = info.splits['test'].num_examples//args.batch_size//VAL_SUBSPLITS
+  
+early_stopper = EarlyStopping(monitor='val_loss', verbose=1, patience=args.patience)
+model_checkpoint = ModelCheckpoint(args.model_path, monitor='val_loss',
+  mode='min', save_best_only=True, verbose=1)
+clr = CyclicLR(base_lr=0.0005, max_lr=0.006, step_size=4*STEPS_PER_EPOCH, mode='triangular2')
+callbacks = [early_stopper, model_checkpoint, clr]
+
+model_history = model.fit(tfds.as_numpy(augmentedDataset()), epochs=args.max_epochs,
+                          steps_per_epoch=STEPS_PER_EPOCH,
+                          validation_steps=VALIDATION_STEPS,
+                          validation_data=tfds.as_numpy(validate_dataset),
+                          callbacks=callbacks)
+                          
+model = load_model(args.model_path, compile=False)     
+model.compile(optimizer='adam',
+              loss=custom_loss,
+              metrics=['accuracy'])
+              
+print('Final test set evaluation:')
+test_loss, test_accuracy = model.evaluate(tfds.as_numpy(test_dataset), verbose=0, steps=VALIDATION_STEPS//2)
+print('Test loss: {:.4f}. Test Accuracy: {:.4f}'.format(test_loss, test_accuracy))
+
+print('Plotting loss')
+loss = model_history.history['loss']
+val_loss = model_history.history['val_loss']
+epochs = range(len(loss))
+plt.figure()
+plt.plot(epochs, loss, 'r', label='Training loss')
+plt.plot(epochs, val_loss, 'bo', label='Validation loss')
+plt.title('Training and Validation Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss Value')
+plt.ylim([0, 1])
+plt.legend()
+plt.show()
+
+print('Displaying some example predictions from the test set')
+
 def display(display_list):
   plt.figure(figsize=(15, 15))
 
@@ -150,74 +201,15 @@ def display(display_list):
       plt.imshow(tf.keras.preprocessing.image.array_to_img(display_list[i]))
     plt.axis('off')
   plt.show()
-  
-for image, mask in train_dataset.take(1):
-  sample_image, sample_mask = image, mask
-#display([sample_image, sample_mask])
 
 def create_mask(pred_mask):
   pred_mask = tf.argmax(pred_mask, axis=-1)
   pred_mask = pred_mask[..., tf.newaxis]
   return pred_mask[0]
-  
-def show_predictions(dataset=None, num=1):
-  if dataset:
-    for image, mask in dataset.take(num):
-      pred_mask = model.predict(image, steps=1)
-      display([image[0], mask[0], create_mask(pred_mask)])
-  else:
-    display([sample_image, sample_mask,
-             create_mask(model.predict(sample_image[tf.newaxis, ...], steps=1))])
-             
-#show_predictions()
 
-def img_generator():
-  for img, mask in train_dataset:
-    img, mask = colorAugmentations(img, mask)
-    img, mask = geometryAugmentations(img, mask)
-    yield img, mask
+def show_predictions(dataset, num=1):
+  for image, mask in dataset.take(num):
+    pred_mask = model.predict(image, steps=1)
+    display([image[0], mask[0], create_mask(pred_mask)])
 
-def augmentDataset():
-  return (tf.data.Dataset.from_generator(img_generator, (PIXEL_DATA_TYPE, PIXEL_DATA_TYPE))
-            .batch(args.batch_size)
-            .prefetch(buffer_size=BUFFER_SIZE))
-    # TODO prefetch or cache?
-  
-VAL_SUBSPLITS = 5
-VALIDATION_STEPS = info.splits['test'].num_examples//args.batch_size//VAL_SUBSPLITS
-  
-early_stopper = EarlyStopping(monitor='val_loss', verbose=1, patience=args.patience)
-model_checkpoint = ModelCheckpoint(args.model_path, monitor='val_loss',
-  mode='min', save_best_only=True, verbose=1)
-clr = CyclicLR(base_lr=0.0005, max_lr=0.006, step_size=4*STEPS_PER_EPOCH, mode='triangular2')
-callbacks = [early_stopper, model_checkpoint, clr]
-
-# TODO: augment
-model_history = model.fit(tfds.as_numpy(augmentDataset()), epochs=args.max_epochs,
-                          steps_per_epoch=STEPS_PER_EPOCH,
-                          validation_steps=VALIDATION_STEPS,
-                          validation_data=tfds.as_numpy(validate_dataset),
-                          callbacks=callbacks)
-loss = model_history.history['loss']
-val_loss = model_history.history['val_loss']
-                          
-model = load_model(args.model_path, compile=False)     
-model.compile(optimizer='adam',
-              loss=custom_loss,
-              metrics=['accuracy'])  
-
-epochs = range(len(loss))
-plt.figure()
-plt.plot(epochs, loss, 'r', label='Training loss')
-plt.plot(epochs, val_loss, 'bo', label='Validation loss')
-plt.title('Training and Validation Loss')
-plt.xlabel('Epoch')
-plt.ylabel('Loss Value')
-plt.ylim([0, 1])
-plt.legend()
-plt.show()
-
-print('Final test evaluation:')
-test_loss, test_accuracy = model.evaluate(tfds.as_numpy(test_dataset), verbose=0, steps=VALIDATION_STEPS//2)
-print('Test loss: {:.4f}. Test Accuracy: {:.4f}'.format(test_loss, test_accuracy))
 show_predictions(test_dataset, 3)
