@@ -55,7 +55,8 @@ IMG_SIZE = 128
 #BACKBONE = 'mobilenetv2'  # 88% (frozen encoder)
 BACKBONE = 'inceptionv3'
 # TODO: unfreeze more layers?
-model = sm.Unet(BACKBONE, classes=3, encoder_freeze=args.encoder_freeze_percent, input_shape=(IMG_SIZE, IMG_SIZE, 3))
+#model = sm.Unet(BACKBONE, classes=3, encoder_freeze=args.encoder_freeze_percent, input_shape=(IMG_SIZE, IMG_SIZE, 3))
+model = sm.Unet(BACKBONE, classes=3, encoder_freeze=args.encoder_freeze_percent, activation='relu', input_shape=(IMG_SIZE, IMG_SIZE, 3))
 preprocess_input = sm.get_preprocessing(BACKBONE)
 # TODO: try DICE
 
@@ -137,8 +138,7 @@ def dice_plus_xent_loss(ground_truth, prediction, num_classes=3):
 
     tf.print(loss_dice, output_stream=sys.stdout)
     tf.print(loss_xent, output_stream=sys.stdout)
-    #return loss_dice + loss_xent
-    return loss_xent
+    return loss_dice + loss_xent
  
 def tversky_loss(y_true, y_pred):
   alpha = 0.5
@@ -157,12 +157,11 @@ def tversky_loss(y_true, y_pred):
   
   Ncl = K.cast(K.shape(y_true)[-1], 'float32')
   return Ncl-T
-  #return T-Ncl
     
 def custom_loss(y_true, y_pred):
   #return 0.5 * SCCE(y_true, y_pred) - dice_coef(y_true, y_pred)
   #return tversky_loss(y_true, y_pred)
-  return CCE(y_true, y_pred)
+  return CCE(y_true, y_pred) + tversky_loss(y_true, y_pred)
   
 model.compile(optimizer='adam',
               loss=custom_loss,
@@ -290,7 +289,7 @@ plt.plot(epochs, val_loss, 'bo', label='Validation loss')
 plt.title('Training and Validation Loss')
 plt.xlabel('Epoch')
 plt.ylabel('Loss Value')
-plt.ylim([0, 1])
+#plt.ylim([min(0, loss, val_loss), max(1, loss, val_loss)])
 plt.legend()
 plt.show()
 
@@ -304,10 +303,10 @@ def display(display_list):
   for i in range(len(display_list)):
     plt.subplot(1, len(display_list), i+1)
     plt.title(title[i])
-    if len(display_list[i].shape) == 4:
-      plt.imshow(tf.keras.preprocessing.image.array_to_img(display_list[i][0]))
-    else:
-      plt.imshow(tf.keras.preprocessing.image.array_to_img(display_list[i]))
+    #if len(display_list[i].shape) == 4:
+    #  plt.imshow(tf.keras.preprocessing.image.array_to_img(display_list[i][0]))
+    #else:
+    plt.imshow(tf.keras.preprocessing.image.array_to_img(display_list[i]))
     plt.axis('off')
   plt.show()
 
