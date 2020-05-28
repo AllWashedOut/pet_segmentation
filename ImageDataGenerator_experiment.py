@@ -107,14 +107,17 @@ def generatorFromDataSet(dataset, augment=False):
   if augment:
     preprocessor = colorAugmentations
     
+    
   img_gen = ImageDataGenerator(**data_gen_args, preprocessing_function=preprocessor)
   mask_gen = ImageDataGenerator(**data_gen_args)
-  img_gen.fit(x, augment=True, seed=seed)
-  mask_gen.fit(y, augment=True, seed=seed)
+  # TODO: AUGMENT?
+  img_gen.fit(x, augment=False, seed=seed)
+  mask_gen.fit(y, augment=False, seed=seed)
   
   # save_to_dir='.'
-  return (pair for pair in zip(img_gen.flow(x, seed=seed, batch_size=args.batch_size, shuffle=True),
-             mask_gen.flow(y, seed=seed, batch_size=args.batch_size, shuffle=True)))
+  # TODO: shuffle
+  return (pair for pair in zip(img_gen.flow(x, seed=seed, batch_size=args.batch_size, shuffle=False),
+             mask_gen.flow(y, seed=seed, batch_size=args.batch_size, shuffle=False)))
 
 def display(display_list):
   plt.figure(figsize=(15, 15))
@@ -198,7 +201,8 @@ callbacks = [early_stopper, model_checkpoint]
 
 VAL_SUBSPLITS = 5
 VALIDATION_STEPS = info.splits['test'].num_examples//args.batch_size//VAL_SUBSPLITS
-model_history = model.fit_generator(generatorFromDataSet(train, augment=True), epochs=args.max_epochs,
+# TODO: augment
+model_history = model.fit_generator(generatorFromDataSet(train, augment=False), epochs=args.max_epochs,
                           steps_per_epoch=STEPS_PER_EPOCH,
                           validation_steps=VALIDATION_STEPS,
                           validation_data=tf.compat.v1.data.make_one_shot_iterator(validate_dataset),
