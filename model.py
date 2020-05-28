@@ -219,5 +219,5 @@ plt.show()
 
 print('Final test evaluation:')
 test_loss, test_accuracy = model.evaluate(tfds.as_numpy(test_dataset), verbose=0, steps=VALIDATION_STEPS//2)
-print('Test loss: {:.2f}. Test Accuracy: {:.2f}'.format(test_loss, test_accuracy))
+print('Test loss: {:.4f}. Test Accuracy: {:.4f}'.format(test_loss, test_accuracy))
 show_predictions(test_dataset, 3)
