@@ -11,7 +11,9 @@ from keras.callbacks import EarlyStopping, ModelCheckpoint
 from keras.preprocessing.image import ImageDataGenerator
 from tensorflow.data.experimental import AUTOTUNE
 
-import seg.segmentation_models as sm  # https://github.com/qubvel/segmentation_models
+# TODO: restore to github version. (https://github.com/qubvel/segmentation_models)
+# Currently requires my fork for partial freezing (https://github.com/AllWashedOut/segmentation_models) 
+import segmentation_models as sm
 from clr_callback import CyclicLR
 
 import tensorflow_datasets as tfds
