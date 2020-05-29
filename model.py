@@ -9,7 +9,6 @@ import sys
 import keras
 from keras.models import load_model
 from keras.callbacks import EarlyStopping, ModelCheckpoint
-from keras.preprocessing.image import ImageDataGenerator
 from keras import backend as K
 from tensorflow.data.experimental import AUTOTUNE
 
@@ -53,12 +52,26 @@ print(info)
 
 IMG_SIZE = 128
 #BACKBONE = 'mobilenetv2'  # 88% (frozen encoder)
-BACKBONE = 'inceptionv3'
+#BACKBONE = 'inceptionv3'  # ~90%+
+BACKBONE = 'efficientnetb7'
 # TODO: unfreeze more layers?
 #model = sm.Unet(BACKBONE, classes=3, encoder_freeze=args.encoder_freeze_percent, input_shape=(IMG_SIZE, IMG_SIZE, 3))
 model = sm.Unet(BACKBONE, classes=3, encoder_freeze=args.encoder_freeze_percent, activation='relu', input_shape=(IMG_SIZE, IMG_SIZE, 3))
 preprocess_input = sm.get_preprocessing(BACKBONE)
- 
+
+#skip_connection_layers = set([228, 86, 16, 9])
+skip_connection_layers = set(['block6a_expand_activation', 'block4a_expand_activation',
+                           'block3a_expand_activation', 'block2a_expand_activation'])
+for i, layer in enumerate(model.layers):
+  if i in skip_connection_layers or layer.name in skip_connection_layers:
+    print('{} (layer {}) is a skip connection.'.format(layer.name, i))
+
+    
+###############################################################################
+# Custom loss
+# Sum of Categorical Crossentropy and Tversky losses.
+# For more info on Tversky, see https://arxiv.org/abs/1706.05721
+###############################################################################
 def tversky_loss(y_true, y_pred):
   # Probabilities that a pixel is NOT of the given class
   y_not_pred = K.ones(K.shape(y_true)) - y_pred
@@ -68,19 +81,24 @@ def tversky_loss(y_true, y_pred):
   denominators = numerators + 0.5 * K.sum(y_pred * y_not_true, axis) + 0.5 * K.sum(y_not_pred * y_true, axis)
   smoothing = tf.constant(1e-8)  # prevent some nan results
   score = K.sum((numerators + smoothing)/(denominators + smoothing))
-  #score = K.sum((numerators)/(denominators))
   
   num_classes = K.cast(K.shape(y_true)[-1], 'float32')
   return (num_classes - score) / num_classes
 
 CCE = keras.losses.CategoricalCrossentropy(from_logits=True)
-def custom_loss(y_true, y_pred):
+def combined_loss(y_true, y_pred):
   return CCE(y_true, y_pred) + tversky_loss(y_true, y_pred)
   
 model.compile(optimizer='adam',
-              loss=custom_loss,
+              loss=combined_loss,
               metrics=['accuracy'])
-              
+
+###############################################################################
+# Data augmentation
+# Vary pixel color/luminance and take random crops.
+# Some care is taken to do this at every iteration, rather than only once per
+# test run.
+###############################################################################
 def colorAugmentations(img, mask):
   # Augmentations that alter color but not geometry. That means that they
   # should be applied only the to image, not the mask.
@@ -112,7 +130,6 @@ def geometryAugmentations(img, mask):
   img.set_shape([patch_size[0], patch_size[1], 3])
   mask = combined[:, :, 3:]
   mask.set_shape([patch_size[0], patch_size[1], 3])
-  # TODO MORE    
   
   # TODO: test antialias and resize methods
   #img = tf.image.resize(img, (IMG_SIZE, IMG_SIZE), antialias=True, method=tf.image.ResizeMethod.LANCZOS3)
@@ -126,7 +143,6 @@ def geometryAugmentations(img, mask):
 PIXEL_DATA_TYPE = tf.float32
 def normalize(input_image, input_mask, num_classes=3):
   input_image = tf.cast(input_image, PIXEL_DATA_TYPE) / 255.0
-  #input_mask = tf.cast(input_mask, PIXEL_DATA_TYPE) - 1
   # Onehot encode the class masks, i.e. turn 0 into [1,0,0] and 1 into [0,1,0] and 2 into [0,0,1]
   input_mask = tf.squeeze(tf.one_hot(indices=tf.cast(input_mask, dtype=tf.uint8), depth=num_classes), axis=-2)
   return input_image, input_mask
@@ -150,7 +166,6 @@ def load_image_test(datapoint):
   #input_image = preprocess_input(input_image)
 
   return input_image, input_mask
-  
 
 TRAIN_LENGTH = info.splits['train'].num_examples
 BUFFER_SIZE = args.batch_size * 4
@@ -164,35 +179,42 @@ train_dataset = (main_ds['train']
 validate_dataset = val_ds.map(load_image_test, num_parallel_calls=AUTOTUNE).repeat().batch(args.batch_size)
 test_dataset = test_ds.map(load_image_test, num_parallel_calls=AUTOTUNE).batch(args.batch_size)
 
-def img_generator():
+def augmentedImgGenerator():
   for img, mask in train_dataset:
     img, mask = colorAugmentations(img, mask)
     img, mask = geometryAugmentations(img, mask)
     yield img, mask
 
 def augmentedDataset():
-  return (tf.data.Dataset.from_generator(img_generator, (PIXEL_DATA_TYPE, PIXEL_DATA_TYPE))
-            .batch(args.batch_size)
-            .prefetch(buffer_size=BUFFER_SIZE))
-  
-VAL_SUBSPLITS = 5
-VALIDATION_STEPS = info.splits['test'].num_examples//args.batch_size//VAL_SUBSPLITS
-  
+  return (
+    tf.data.Dataset.from_generator(augmentedImgGenerator,
+                                   (PIXEL_DATA_TYPE, PIXEL_DATA_TYPE))
+       .batch(args.batch_size)
+       .prefetch(buffer_size=BUFFER_SIZE))
+
+###############################################################################
+# Train the model
+###############################################################################
 early_stopper = EarlyStopping(monitor='val_loss', verbose=1, patience=args.patience)
 model_checkpoint = ModelCheckpoint(args.model_path, monitor='val_loss',
   mode='min', save_best_only=True, verbose=1)
 clr = CyclicLR(base_lr=0.0005, max_lr=0.006, step_size=4*STEPS_PER_EPOCH, mode='triangular2')
 callbacks = [early_stopper, model_checkpoint, clr]
 
+VAL_SUBSPLITS = 5
+VALIDATION_STEPS = info.splits['test'].num_examples//args.batch_size//VAL_SUBSPLITS
 model_history = model.fit(tfds.as_numpy(augmentedDataset()), epochs=args.max_epochs,
                           steps_per_epoch=STEPS_PER_EPOCH,
                           validation_steps=VALIDATION_STEPS,
                           validation_data=tfds.as_numpy(validate_dataset),
                           callbacks=callbacks)
                           
+###############################################################################
+# Load the best model snapshot and evaluate the quality
+###############################################################################     
 model = load_model(args.model_path, compile=False)     
 model.compile(optimizer='adam',
-              loss=custom_loss,
+              loss=combined_loss,
               metrics=['accuracy'])
               
 print('Final test set evaluation:')
@@ -209,7 +231,6 @@ plt.plot(epochs, val_loss, 'bo', label='Validation loss')
 plt.title('Training and Validation Loss')
 plt.xlabel('Epoch')
 plt.ylabel('Loss Value')
-#plt.ylim([min(0, loss, val_loss), max(1, loss, val_loss)])
 plt.legend()
 plt.show()
 
