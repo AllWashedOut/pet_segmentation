@@ -43,6 +43,12 @@ parser.add_argument('--max_epochs', action='store',
 parser.add_argument('--encoder_freeze_percent', action='store',
                       default=0.9, dest='encoder_freeze_percent',
                       help='Fraction of encoder layers to set untrainable', type=float)
+parser.add_argument('--encoder', action='store',
+                      default='mobilenetv2', dest='encoder',
+                      help='Encoder backend. See "Backbones" at https://github.com/qubvel/segmentation_models')
+parser.add_argument('--image_size', action='store',
+                      default=128, dest='image_size',
+                      help='Square resize all input images to this many pixels per dimension', type=int)
                       
 args = parser.parse_args()
 
@@ -50,21 +56,17 @@ main_ds, info = tfds.load('oxford_iiit_pet:3.*.*', with_info=True, data_dir=args
 val_ds, test_ds = tfds.load('oxford_iiit_pet:3.*.*', split=['test[:50%]', 'test[-50%:]'], data_dir=args.dataset_path)
 print(info)
 
-IMG_SIZE = 128
-#BACKBONE = 'mobilenetv2'  # 88% (frozen encoder)
-#BACKBONE = 'inceptionv3'  # ~90%+
 BACKBONE = 'efficientnetb7'
-# TODO: unfreeze more layers?
-#model = sm.Unet(BACKBONE, classes=3, encoder_freeze=args.encoder_freeze_percent, input_shape=(IMG_SIZE, IMG_SIZE, 3))
-model = sm.Unet(BACKBONE, classes=3, encoder_freeze=args.encoder_freeze_percent, activation='relu', input_shape=(IMG_SIZE, IMG_SIZE, 3))
-preprocess_input = sm.get_preprocessing(BACKBONE)
 
-#skip_connection_layers = set([228, 86, 16, 9])
-skip_connection_layers = set(['block6a_expand_activation', 'block4a_expand_activation',
-                           'block3a_expand_activation', 'block2a_expand_activation'])
-for i, layer in enumerate(model.layers):
-  if i in skip_connection_layers or layer.name in skip_connection_layers:
-    print('{} (layer {}) is a skip connection.'.format(layer.name, i))
+model = sm.Unet(args.encoder, classes=3, encoder_freeze=args.encoder_freeze_percent, activation='relu', input_shape=(args.image_size, args.image_size, 3))
+preprocess_input = sm.get_preprocessing(args.encoder)
+
+# skip_connection_layers = set([228, 86, 16, 9])
+# skip_connection_layers = set(['block6a_expand_activation', 'block4a_expand_activation',
+                           # 'block3a_expand_activation', 'block2a_expand_activation'])
+# for i, layer in enumerate(model.layers):
+  # if i in skip_connection_layers or layer.name in skip_connection_layers:
+    # print('{} (layer {}) is a skip connection.'.format(layer.name, i))
 
     
 ###############################################################################
@@ -132,11 +134,11 @@ def geometryAugmentations(img, mask):
   mask.set_shape([patch_size[0], patch_size[1], 3])
   
   # TODO: test antialias and resize methods
-  #img = tf.image.resize(img, (IMG_SIZE, IMG_SIZE), antialias=True, method=tf.image.ResizeMethod.LANCZOS3)
-  #mask = tf.image.resize(mask, (IMG_SIZE, IMG_SIZE), antialias=True, method=tf.image.ResizeMethod.LANCZOS3)
-  img = tf.image.resize(img, (IMG_SIZE, IMG_SIZE))
+  #img = tf.image.resize(img, (args.image_size, args.image_size), antialias=True, method=tf.image.ResizeMethod.LANCZOS3)
+  #mask = tf.image.resize(mask, (args.image_size, args.image_size), antialias=True, method=tf.image.ResizeMethod.LANCZOS3)
+  img = tf.image.resize(img, (args.image_size, args.image_size))
   # Masks should not be interpolated, that would give non-integer values.
-  mask = tf.image.resize(mask, (IMG_SIZE, IMG_SIZE), method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+  mask = tf.image.resize(mask, (args.image_size, args.image_size), method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
   
   return img, mask
 
@@ -158,8 +160,8 @@ def load_image_train(datapoint):
   return input_image, input_mask
   
 def load_image_test(datapoint):
-  input_image = tf.image.resize(datapoint['image'], (IMG_SIZE, IMG_SIZE))
-  input_mask = tf.image.resize(datapoint['segmentation_mask'], (IMG_SIZE, IMG_SIZE))
+  input_image = tf.image.resize(datapoint['image'], (args.image_size, args.image_size))
+  input_mask = tf.image.resize(datapoint['segmentation_mask'], (args.image_size, args.image_size))
 
   input_image, input_mask = normalize(input_image, input_mask)
   
