@@ -47,7 +47,7 @@ parser.add_argument('--encoder_freeze_percent', action='store',
                       
 args = parser.parse_args()
 
-dataset, info = tfds.load('oxford_iiit_pet:3.*.*', with_info=True, data_dir=args.dataset_path)
+main_ds, info = tfds.load('oxford_iiit_pet:3.*.*', with_info=True, data_dir=args.dataset_path)
 val_ds, test_ds = tfds.load('oxford_iiit_pet:3.*.*', split=['test[:50%]', 'test[-50%:]'], data_dir=args.dataset_path)
 print(info)
 
@@ -58,109 +58,23 @@ BACKBONE = 'inceptionv3'
 #model = sm.Unet(BACKBONE, classes=3, encoder_freeze=args.encoder_freeze_percent, input_shape=(IMG_SIZE, IMG_SIZE, 3))
 model = sm.Unet(BACKBONE, classes=3, encoder_freeze=args.encoder_freeze_percent, activation='relu', input_shape=(IMG_SIZE, IMG_SIZE, 3))
 preprocess_input = sm.get_preprocessing(BACKBONE)
-# TODO: try DICE
-
-SCCE = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
-CCE = keras.losses.CategoricalCrossentropy(from_logits=True)
-
-def labels_to_one_hot(ground_truth, num_classes=1):
-    """
-    Converts ground truth labels to one-hot, sparse tensors.
-    Used extensively in segmentation losses.
-
-    :param ground_truth: ground truth categorical labels (rank `N`)
-    :param num_classes: A scalar defining the depth of the one hot dimension
-        (see `depth` of `tf.one_hot`)
-    :return: one-hot sparse tf tensor
-        (rank `N+1`; new axis appended at the end)
-    """
-    # read input/output shapes
-    if isinstance(num_classes, tf.Tensor):
-        num_classes_tf = tf.cast(num_classes, dtype=tf.int32)
-    else:
-        num_classes_tf = tf.constant(num_classes, tf.int32)
-    input_shape = tf.shape(ground_truth)
-    output_shape = tf.concat(
-        [input_shape, tf.reshape(num_classes_tf, (1,))], 0)
-
-    #if num_classes == 1:
-    #    # need a sparse representation?
-    #    return tf.reshape(ground_truth, output_shape)
-
-    # squeeze the spatial shape
-    ground_truth = tf.reshape(ground_truth, (-1,))
-    # shape of squeezed output
-    dense_shape = tf.stack([tf.shape(ground_truth)[0], num_classes_tf], 0)
-
-    # create a rank-2 sparse tensor
-    ground_truth = tf.cast(ground_truth, dtype=tf.int64)
-    ids = tf.range(tf.cast(dense_shape[0], dtype=tf.int64), dtype=tf.int64)
-    ids = tf.stack([ids, ground_truth], axis=1)
-    one_hot = tf.SparseTensor(
-        indices=ids,
-        values=tf.ones_like(ground_truth, dtype=tf.float32),
-        dense_shape=tf.cast(dense_shape, dtype=tf.int64))
-
-    # resume the spatial dims
-    one_hot = tf.sparse.reshape(one_hot, output_shape)
-    return one_hot
-
-def dice_plus_xent_loss(ground_truth, prediction, num_classes=3):
-
-
-    """
-    Function to calculate the loss used in https://arxiv.org/pdf/1809.10486.pdf,
-    no-new net, Isenseee et al (used to win the Medical Imaging Decathlon).
-
-    It is the sum of the cross-entropy and the Dice-loss.
-
-    :param prediction: the logits
-    :param ground_truth: the segmentation ground truth
-    :return: the loss (cross_entropy + Dice)
-
-    """
-    num_classes = tf.shape(prediction)[-1]
-
-    prediction = tf.cast(prediction, tf.float32)
-    loss_xent = SCCE(prediction, ground_truth)
-
-    # Dice as according to the paper:
-    one_hot = labels_to_one_hot(ground_truth, num_classes=num_classes)
-    softmax_of_logits = tf.nn.softmax(prediction)
-    dice_numerator = 2.0 * tf.sparse.reduce_sum(
-        one_hot * softmax_of_logits, axis=[0])
-    dice_denominator = \
-        tf.compat.v1.reduce_sum(softmax_of_logits, reduction_indices=[0]) + \
-        tf.sparse.reduce_sum(one_hot, axis=[0])
-
-    epsilon = 0.00001
-    loss_dice = -(dice_numerator + epsilon) / (dice_denominator + epsilon)
-
-    tf.print(loss_dice, output_stream=sys.stdout)
-    tf.print(loss_xent, output_stream=sys.stdout)
-    return loss_dice + loss_xent
  
 def tversky_loss(y_true, y_pred):
-  alpha = 0.5
-  beta  = 0.5
+  # Probabilities that a pixel is NOT of the given class
+  y_not_pred = K.ones(K.shape(y_true)) - y_pred
+  y_not_true = K.ones(K.shape(y_true)) - y_true
+  axis = (0, 1, 2)
+  numerators = K.sum(y_pred*y_true, axis)
+  denominators = numerators + 0.5 * K.sum(y_pred * y_not_true, axis) + 0.5 * K.sum(y_not_pred * y_true, axis)
+  smoothing = tf.constant(1e-8)  # prevent some nan results
+  score = K.sum((numerators + smoothing)/(denominators + smoothing))
+  #score = K.sum((numerators)/(denominators))
   
-  ones = K.ones(K.shape(y_true))
-  p0 = y_pred      # proba that voxels are class i
-  p1 = ones-y_pred # proba that voxels are not class i
-  g0 = y_true
-  g1 = ones-y_true
-  
-  num = K.sum(p0*g0, (0,1,2))
-  den = num + alpha*K.sum(p0*g1,(0,1,2)) + beta*K.sum(p1*g0,(0,1,2))
-  
-  T = K.sum(num/den) # when summing over classes, T has dynamic range [0 Ncl]
-  
-  Ncl = K.cast(K.shape(y_true)[-1], 'float32')
-  return Ncl-T
-    
+  num_classes = K.cast(K.shape(y_true)[-1], 'float32')
+  return (num_classes - score) / num_classes
+
+CCE = keras.losses.CategoricalCrossentropy(from_logits=True)
 def custom_loss(y_true, y_pred):
-  #return 0.5 * SCCE(y_true, y_pred) - dice_coef(y_true, y_pred)
-  #return tversky_loss(y_true, y_pred)
   return CCE(y_true, y_pred) + tversky_loss(y_true, y_pred)
   
 model.compile(optimizer='adam',
@@ -181,12 +95,17 @@ def colorAugmentations(img, mask):
 def geometryAugmentations(img, mask):
   # Augmentations that alter geometry. That means that they
   # should be applied to image AND mask.
-  # Some random operations are done on a concatinated image (img & mask)
+  # Some random operations are done on a concatenated image (img & mask)
   # so that the effect is equal on both.
   combined = tf.concat([img, mask], axis=2)
-  #combined = tfa.image.rotate(combined, tf.random.uniform(shape=[1], minval=-math.pi/8, maxval=math.pi/8, dtype=tf.float32))
+  # Rotation appears to just be too slow to do so frequently.
+  # #rotation_max_degrees = 10
+  # #combined = tf.keras.preprocessing.image.random_rotation(combined, rotation_max_degrees, fill_mode='reflect')
+  # crop out patches, but keep the original aspect ratio. It's tempting to just take
+  # square patches here and skip the square resize later. But that prevents the model
+  # from learning on images with funky aspect ratios which are common in the test data.
   patch_size = (tf.shape(img)[0] * 9 // 10, tf.shape(img)[1] * 9 // 10)
-  combined = tf.image.random_crop(combined, size=[patch_size[0], patch_size[1], 6])  # 3 color channels + 1 mask channel = 4
+  combined = tf.image.random_crop(combined, size=[patch_size[0], patch_size[1], 6])  # 3 color channels + 3 mask channel = 6
   combined = tf.image.random_flip_left_right(combined)
   
   img = combined[:, :, :3]
@@ -199,6 +118,7 @@ def geometryAugmentations(img, mask):
   #img = tf.image.resize(img, (IMG_SIZE, IMG_SIZE), antialias=True, method=tf.image.ResizeMethod.LANCZOS3)
   #mask = tf.image.resize(mask, (IMG_SIZE, IMG_SIZE), antialias=True, method=tf.image.ResizeMethod.LANCZOS3)
   img = tf.image.resize(img, (IMG_SIZE, IMG_SIZE))
+  # Masks should not be interpolated, that would give non-integer values.
   mask = tf.image.resize(mask, (IMG_SIZE, IMG_SIZE), method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
   
   return img, mask
@@ -233,11 +153,11 @@ def load_image_test(datapoint):
   
 
 TRAIN_LENGTH = info.splits['train'].num_examples
-BUFFER_SIZE = 500
+BUFFER_SIZE = args.batch_size * 4
 STEPS_PER_EPOCH = TRAIN_LENGTH // args.batch_size
 
-train_dataset = (dataset['train']
-                         .map(load_image_train, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+train_dataset = (main_ds['train']
+                         .map(load_image_train, num_parallel_calls=AUTOTUNE)
                          .cache()
                          .shuffle(buffer_size=BUFFER_SIZE)
                          .repeat())
