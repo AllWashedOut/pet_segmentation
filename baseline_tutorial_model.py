@@ -45,7 +45,7 @@ def load_image(datapoint):
   return input_image, input_mask
 
 IMAGE_SIZE = 128
-#IMAGE_SIZE = 224
+
 @tf.function
 def resize(input_image, input_mask):
   input_image = tf.image.resize(input_image, (IMAGE_SIZE, IMAGE_SIZE))
@@ -58,25 +58,16 @@ BUFFER_SIZE = 1000
 STEPS_PER_EPOCH = TRAIN_LENGTH // BATCH_SIZE
 
 train = dataset['train'].map(load_image, num_parallel_calls=AUTOTUNE)
-#train_dataset = dataset['train'].map(load_image).cache().map(augment_image, num_parallel_calls=None).shuffle(BUFFER_SIZE).batch(BATCH_SIZE).repeat()
 validate_dataset = val_ds.map(load_image, num_parallel_calls=AUTOTUNE).map(resize, num_parallel_calls=AUTOTUNE).batch(BATCH_SIZE)
 test_dataset = test_ds.map(load_image, num_parallel_calls=AUTOTUNE).map(resize, num_parallel_calls=AUTOTUNE).batch(BATCH_SIZE)
 
 def colorAugmentations(img):
-  # Augmentations that alter color but not geometry. That means that they
-  # should be applied only the to image, not the mask.
-  img = tf.image.random_hue(img, max_delta=0.1)
-  img = tf.image.random_saturation(img, lower=0.5, upper=1.5)
-  img = tf.image.random_contrast(img, lower=0.8, upper=1.2)
-  img = tf.image.random_brightness(img, max_delta=0.3)
-  # add noise
-  img += tf.random.normal(shape=tf.shape(img), mean=0.0, stddev=0.03, dtype=tf.float32)
-  
+  # None, since this is a baseline model.
   return img
 
 def generatorFromDataSet(dataset, augment=False):
   seed = random.randint(0, 99999999)
-  dataset = dataset.map(resize)  # TODO: do this after warps?
+  dataset = dataset.map(resize)
   x = []
   y = []
   for sample in dataset:
@@ -87,21 +78,13 @@ def generatorFromDataSet(dataset, augment=False):
   y = np.asarray(y)
   
   # transforms that effect both image and mask
-  data_gen_args = dict(
-    rotation_range=10,
-    width_shift_range=0.1,
-    height_shift_range=0.1,
-    shear_range=0.1,
-    zoom_range=0.1,
-    horizontal_flip=True,
-    fill_mode='reflect')
+  data_gen_args = dict()
     
   img_gen = tf.keras.preprocessing.image.ImageDataGenerator(**data_gen_args, preprocessing_function=colorAugmentations)
   mask_gen = tf.keras.preprocessing.image.ImageDataGenerator(**data_gen_args)
   img_gen.fit(x, augment=True, seed=seed)
   mask_gen.fit(y, augment=True, seed=seed)
   
-  # save_to_dir='.'
   return zip(img_gen.flow(x, seed=seed, batch_size=BATCH_SIZE, shuffle=True),
              mask_gen.flow(y, seed=seed, batch_size=BATCH_SIZE, shuffle=True))
 
@@ -119,36 +102,11 @@ def display(display_list):
   
 for image, mask in train.take(1):
   sample_image, sample_mask = image, mask
-#display([sample_image, sample_mask])
 
 OUTPUT_CHANNELS = 3
 
 base_model = tf.keras.applications.MobileNetV2(input_shape=[IMAGE_SIZE, IMAGE_SIZE, 3], include_top=False)
 #base_model = tf.keras.applications.InceptionV3(input_shape=[IMAGE_SIZE, IMAGE_SIZE, 3], include_top=False)
-
-#for layer in base_model.layers:
-#  print('{}'.format(layer.name))
-
-# Use the activations of these layers
-# layer_identifiers = [
-    # #288,   # 32x32
-    # #86,   # 16x16
-    # #16,  # 8x8
-    # #9,      # 4x4
-    # 'activation_2',
-    # 'activation_4'
-# ]
-layer_identifiers = [
-    'block_1_expand_relu',   # 64x64
-    'block_3_expand_relu',   # 32x32
-    'block_6_expand_relu',   # 16x16
-    'block_13_expand_relu',  # 8x8
-    'block_16_project',      # 4x4
-]
-layers = [base_model.get_layer(i).output if isinstance(i, str) else base_model.layers[i].output for i in layer_identifiers]
-print('Selected encoder activations to pass to the decoder:')
-for layer in layers:
-  print('\t{}'.format(layer.name))
 
 # Create the feature extraction model
 down_stack = tf.keras.Model(inputs=base_model.input, outputs=layers)
@@ -195,9 +153,8 @@ def dice_loss(y_true, y_pred):
   
 @tf.function()
 def combined_loss(y_true, y_pred, name='CustomLoss'):
-  #return tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)(y_true, y_pred) + dice_loss(y_true, y_pred)
+  # Sticking to just SparseCategoricalCrossentropy, as in the TensorFlow tutorial
   return tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)(y_true, y_pred)
-  #return dice_loss(y_true, y_pred)
   
 model = unet_model(OUTPUT_CHANNELS)
 model.compile(optimizer='adam',
@@ -219,14 +176,6 @@ def show_predictions(dataset=None, num=1):
   else:
     display([sample_image, sample_mask,
              create_mask(model.predict(sample_image[tf.newaxis, ...]))])
-             
-#show_predictions()
-
-#class DisplayCallback(tf.keras.callbacks.Callback):
-#  def on_epoch_end(self, epoch, logs=None):
-#    clear_output(wait=True)
-#    show_predictions()
-#    print ('\nSample Prediction after epoch {}\n'.format(epoch+1))
     
 # Early stopping with patience
 early_stopper = EarlyStopping(monitor='val_loss', verbose=1, patience=args.patience)
@@ -247,7 +196,6 @@ model = load_model(args.model_path, compile=False)
 model.compile(optimizer='adam',
               loss=combined_loss,
               metrics=['accuracy'])                     
-#show_predictions()
                           
 loss = model_history.history['loss']
 val_loss = model_history.history['val_loss']
