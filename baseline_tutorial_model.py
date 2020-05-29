@@ -78,7 +78,7 @@ def generatorFromDataSet(dataset, augment=False):
   y = np.asarray(y)
   
   # transforms that effect both image and mask
-  data_gen_args = dict()
+  data_gen_args = dict(horizontal_flip=True)
     
   img_gen = tf.keras.preprocessing.image.ImageDataGenerator(**data_gen_args, preprocessing_function=colorAugmentations)
   mask_gen = tf.keras.preprocessing.image.ImageDataGenerator(**data_gen_args)
