@@ -244,9 +244,6 @@ def display(display_list):
   for i in range(len(display_list)):
     plt.subplot(1, len(display_list), i+1)
     plt.title(title[i])
-    #if len(display_list[i].shape) == 4:
-    #  plt.imshow(tf.keras.preprocessing.image.array_to_img(display_list[i][0]))
-    #else:
     plt.imshow(tf.keras.preprocessing.image.array_to_img(display_list[i]))
     plt.axis('off')
   plt.show()
