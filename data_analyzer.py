@@ -63,7 +63,7 @@ for item in main_ds['train']:
   for mask_pixel_type in K.flatten(item['segmentation_mask']):
     counter[K.get_value(mask_pixel_type)] += 1
   num_pics += 1
-  print(num_pics)
+  print('Analyzed {} of {} pics'.format(num_pics, max_pics))
   if num_pics >= max_pics:
     break
 
