@@ -49,26 +49,18 @@ parser.add_argument('--encoder', action='store',
 parser.add_argument('--image_size', action='store',
                       default=128, dest='image_size',
                       help='Square resize all input images to this many pixels per dimension', type=int)
+parser.add_argument('--continue_existing', action='store_true',
+                      default=False, dest='continue_existing',
+                      help='Load an existing model and continue training')
+parser.add_argument('--cyclical_learning_rate', action='store_true',
+                      default=False, dest='cyclical_learning_rate',
+                      help='Vary the learning rate in a cycle')
+parser.add_argument('--center_dropout', action='store',
+                      default=0.0, dest='center_dropout',
+                      help='dropout to apply between encoder and decoder', type=float)
                       
 args = parser.parse_args()
 
-main_ds, info = tfds.load('oxford_iiit_pet:3.*.*', with_info=True, data_dir=args.dataset_path)
-val_ds, test_ds = tfds.load('oxford_iiit_pet:3.*.*', split=['test[:50%]', 'test[-50%:]'], data_dir=args.dataset_path)
-print(info)
-
-BACKBONE = 'efficientnetb7'
-
-model = sm.Unet(args.encoder, classes=3, encoder_freeze=args.encoder_freeze_percent, activation='relu', input_shape=(args.image_size, args.image_size, 3))
-preprocess_input = sm.get_preprocessing(args.encoder)
-
-# skip_connection_layers = set([228, 86, 16, 9])
-# skip_connection_layers = set(['block6a_expand_activation', 'block4a_expand_activation',
-                           # 'block3a_expand_activation', 'block2a_expand_activation'])
-# for i, layer in enumerate(model.layers):
-  # if i in skip_connection_layers or layer.name in skip_connection_layers:
-    # print('{} (layer {}) is a skip connection.'.format(layer.name, i))
-
-    
 ###############################################################################
 # Custom loss
 # Sum of Categorical Crossentropy and Tversky losses.
@@ -79,7 +71,7 @@ def tversky_loss(y_true, y_pred):
   y_not_pred = K.ones(K.shape(y_true)) - y_pred
   y_not_true = K.ones(K.shape(y_true)) - y_true
   axis = (0, 1, 2)
-  numerators = K.sum(y_pred*y_true, axis)
+  numerators = K.sum(y_pred * y_true, axis)
   denominators = numerators + 0.5 * K.sum(y_pred * y_not_true, axis) + 0.5 * K.sum(y_not_pred * y_true, axis)
   smoothing = tf.constant(1e-8)  # prevent some nan results
   score = K.sum((numerators + smoothing)/(denominators + smoothing))
@@ -90,10 +82,17 @@ def tversky_loss(y_true, y_pred):
 CCE = keras.losses.CategoricalCrossentropy(from_logits=True)
 def combined_loss(y_true, y_pred):
   return CCE(y_true, y_pred) + tversky_loss(y_true, y_pred)
-  
+
+if args.continue_existing:
+  model = load_model(args.model_path, compile=False)   
+else:
+  model = sm.Unet(args.encoder, classes=3, encoder_freeze=args.encoder_freeze_percent,
+                  activation='relu', input_shape=(args.image_size, args.image_size, 3),
+                  center_dropout=args.center_dropout)
 model.compile(optimizer='adam',
               loss=combined_loss,
               metrics=['accuracy'])
+preprocess_input = sm.get_preprocessing(args.encoder)
 
 ###############################################################################
 # Data augmentation
@@ -133,9 +132,6 @@ def geometryAugmentations(img, mask):
   mask = combined[:, :, 3:]
   mask.set_shape([patch_size[0], patch_size[1], 3])
   
-  # TODO: test antialias and resize methods
-  #img = tf.image.resize(img, (args.image_size, args.image_size), antialias=True, method=tf.image.ResizeMethod.LANCZOS3)
-  #mask = tf.image.resize(mask, (args.image_size, args.image_size), antialias=True, method=tf.image.ResizeMethod.LANCZOS3)
   img = tf.image.resize(img, (args.image_size, args.image_size))
   # Masks should not be interpolated, that would give non-integer values.
   mask = tf.image.resize(mask, (args.image_size, args.image_size), method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
@@ -168,16 +164,18 @@ def load_image_test(datapoint):
   #input_image = preprocess_input(input_image)
 
   return input_image, input_mask
+  
+train_ds, info = tfds.load('oxford_iiit_pet:3.*.*', with_info=True, data_dir=args.dataset_path)
+val_ds, test_ds = tfds.load('oxford_iiit_pet:3.*.*', split=['test[:50%]', 'test[-50%:]'], data_dir=args.dataset_path)
+print(info)
 
 TRAIN_LENGTH = info.splits['train'].num_examples
 BUFFER_SIZE = args.batch_size * 4
 STEPS_PER_EPOCH = TRAIN_LENGTH // args.batch_size
 
-train_dataset = (main_ds['train']
+train_dataset = (train_ds['train']
                          .map(load_image_train, num_parallel_calls=AUTOTUNE)
-                         .cache()
-                         .shuffle(buffer_size=BUFFER_SIZE)
-                         .repeat())
+                         .cache().shuffle(buffer_size=BUFFER_SIZE).repeat())
 validate_dataset = val_ds.map(load_image_test, num_parallel_calls=AUTOTUNE).repeat().batch(args.batch_size)
 test_dataset = test_ds.map(load_image_test, num_parallel_calls=AUTOTUNE).batch(args.batch_size)
 
@@ -189,8 +187,8 @@ def augmentedImgGenerator():
 
 def augmentedDataset():
   return (
-    tf.data.Dataset.from_generator(augmentedImgGenerator,
-                                   (PIXEL_DATA_TYPE, PIXEL_DATA_TYPE))
+    tf.data.Dataset.from_generator(
+      augmentedImgGenerator, (PIXEL_DATA_TYPE, PIXEL_DATA_TYPE))
        .batch(args.batch_size)
        .prefetch(buffer_size=BUFFER_SIZE))
 
@@ -200,8 +198,9 @@ def augmentedDataset():
 early_stopper = EarlyStopping(monitor='val_loss', verbose=1, patience=args.patience)
 model_checkpoint = ModelCheckpoint(args.model_path, monitor='val_loss',
   mode='min', save_best_only=True, verbose=1)
-clr = CyclicLR(base_lr=0.0005, max_lr=0.006, step_size=4*STEPS_PER_EPOCH, mode='triangular2')
-callbacks = [early_stopper, model_checkpoint, clr]
+callbacks = [early_stopper, model_checkpoint]
+if args.cyclical_learning_rate:
+  callbacks.append(CyclicLR(base_lr=0.0005, max_lr=0.006, step_size=4*STEPS_PER_EPOCH, mode='triangular2'))
 
 VAL_SUBSPLITS = 5
 VALIDATION_STEPS = info.splits['test'].num_examples//args.batch_size//VAL_SUBSPLITS
