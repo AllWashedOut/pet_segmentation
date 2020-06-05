@@ -13,7 +13,8 @@ from keras import backend as K
 from tensorflow.data.experimental import AUTOTUNE
 
 # TODO: restore to github version. (https://github.com/qubvel/segmentation_models)
-# Currently requires my fork for partial freezing (https://github.com/AllWashedOut/segmentation_models) 
+# Currently requires my fork for partial freezing and center dropout
+# (https://github.com/AllWashedOut/segmentation_models) 
 import segmentation_models as sm
 from clr_callback import CyclicLR
 
@@ -55,6 +56,9 @@ parser.add_argument('--continue_existing', action='store_true',
 parser.add_argument('--cyclical_learning_rate', action='store_true',
                       default=False, dest='cyclical_learning_rate',
                       help='Vary the learning rate in a cycle')
+parser.add_argument('--tversky', action='store_true',
+                      default=False, dest='tversky',
+                      help='include tversky loss')
 parser.add_argument('--center_dropout', action='store',
                       default=0.0, dest='center_dropout',
                       help='dropout to apply between encoder and decoder', type=float)
@@ -81,7 +85,10 @@ def tversky_loss(y_true, y_pred):
 
 CCE = keras.losses.CategoricalCrossentropy(from_logits=True)
 def combined_loss(y_true, y_pred):
-  return CCE(y_true, y_pred) + tversky_loss(y_true, y_pred)
+  loss = CCE(y_true, y_pred)
+  if args.tversky:
+    loss += tversky_loss(y_true, y_pred)
+  return loss 
 
 if args.continue_existing:
   model = load_model(args.model_path, compile=False)   
