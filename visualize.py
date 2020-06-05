@@ -34,7 +34,7 @@ parser.add_argument('--image_size', action='store',
                       help='Square resize all input images to this many pixels per dimension', type=int)
 parser.add_argument('--tversky', action='store_true',
                       default=False, dest='tversky',
-                      help='Vary the learning rate in a cycle')
+                      help='include tversky loss'
                       
 args = parser.parse_args()
 
