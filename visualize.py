@@ -7,10 +7,15 @@ import math
 import sys
 
 import keras
+import efficientnet.keras
 from keras.models import load_model
-from keras.callbacks import EarlyStopping, ModelCheckpoint
 from keras import backend as K
+from keras import activations
 from tensorflow.data.experimental import AUTOTUNE
+from vis.visualization import visualize_activation
+from vis.utils import utils
+from vis.input_modifiers import Jitter
+import matplotlib.pyplot as plt
 
 import tensorflow_datasets as tfds
 tfds.disable_progress_bar()
@@ -26,15 +31,18 @@ parser.add_argument('--model_path', action='store',
 parser.add_argument('--dataset_path', action='store',
                       default='~/tensorflow_datasets/', dest='dataset_path',
                       help='Path to store input data.')
-parser.add_argument('--encoder_freeze_percent', action='store',
-                      default=0.9, dest='encoder_freeze_percent',
-                      help='Fraction of encoder layers to set untrainable', type=float)
 parser.add_argument('--image_size', action='store',
                       default=128, dest='image_size',
                       help='Square resize all input images to this many pixels per dimension', type=int)
 parser.add_argument('--tversky', action='store_true',
                       default=False, dest='tversky',
-                      help='include tversky loss'
+                      help='include tversky loss')
+parser.add_argument('--show_worst_n', action='store',
+                      default=5, dest='show_worst_n',
+                      help='Show the n worst mask predictions', type=int)
+parser.add_argument('--layer_to_visualize', action='store',
+                      default=0, dest='layer_to_visualize',
+                      help='Visualize max activation of a layer (if non-zero)', type=int)
                       
 args = parser.parse_args()
 
@@ -61,7 +69,7 @@ def combined_loss(y_true, y_pred):
   loss = CCE(y_true, y_pred)
   if args.tversky:
     loss += tversky_loss(y_true, y_pred)
-  return loss 
+  return loss
 
 model = load_model(args.model_path, compile=False)   
 model.compile(optimizer='adam',
@@ -97,9 +105,33 @@ model.compile(optimizer='adam',
               loss=combined_loss,
               metrics=['accuracy'])
               
+for i, layer in enumerate(model.layers):
+  print('{}: {}'.format(i, layer.name))
+              
 print('Final test set evaluation:')
 test_loss, test_accuracy = model.evaluate(tfds.as_numpy(test_dataset), verbose=0, steps=10)
 print('Test loss: {:.4f}. Test Accuracy: {:.4f}'.format(test_loss, test_accuracy))
+
+if args.layer_to_visualize:
+  print('Visualizing model activation')
+  filters_to_visualize = [0, 1, 2, 3, 4, 5, 6, 7]
+  # model.layers[args.layer_to_visualize].activation = activations.linear
+  # # Due to custom loss, this must be done manually
+  # #model = utils.apply_modifications(model)
+  # tmp_path = args.model_path + '_tmp'
+  # model.save(tmp_path)
+  # model = load_model(tmp_path, compile=False)     
+  # model.compile(optimizer='adam',
+                # loss=combined_loss,
+                # metrics=['accuracy'])
+                
+  for filter_to_visualize in filters_to_visualize:
+    print('Visualizing layer {} filter {}'.format(model.layers[args.layer_to_visualize].name, filter_to_visualize))
+    visualization = visualize_activation(model, args.layer_to_visualize, filter_indices=filter_to_visualize, input_modifiers=[Jitter(0)])
+    plt.imshow(visualization)
+    plt.title(f'Filter = {filter_to_visualize}')
+    plt.axis('off')
+    plt.show()
 
 def display(display_list):
   plt.figure(figsize=(15, 15))
@@ -132,5 +164,6 @@ def show_worst_predictions(dataset, model, num=1):
     pred_mask = create_mask(result[3])
     print('Worst prediction #{} has loss {}'.format(i, loss))
     display([img, mask, pred_mask])
-    
-show_worst_predictions(test_dataset, model, num=10)
+
+    print('showing the {} worst mask predictions'.format(args.show_worst_n))
+show_worst_predictions(test_dataset, model, num=args.show_worst_n)
