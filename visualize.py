@@ -115,15 +115,6 @@ print('Test loss: {:.4f}. Test Accuracy: {:.4f}'.format(test_loss, test_accuracy
 if args.layer_to_visualize:
   print('Visualizing model activation')
   filters_to_visualize = [0, 1, 2, 3, 4, 5, 6, 7]
-  # model.layers[args.layer_to_visualize].activation = activations.linear
-  # # Due to custom loss, this must be done manually
-  # #model = utils.apply_modifications(model)
-  # tmp_path = args.model_path + '_tmp'
-  # model.save(tmp_path)
-  # model = load_model(tmp_path, compile=False)     
-  # model.compile(optimizer='adam',
-                # loss=combined_loss,
-                # metrics=['accuracy'])
                 
   for filter_to_visualize in filters_to_visualize:
     print('Visualizing layer {} filter {}'.format(model.layers[args.layer_to_visualize].name, filter_to_visualize))
